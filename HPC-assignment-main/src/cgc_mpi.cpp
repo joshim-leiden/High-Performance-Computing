@@ -6,41 +6,51 @@
 #include <mpi.h>
 #include "common.h"
 
-
-// Cluster average calculation 
-
+// ---------------------------------------------------
+// Calculate cluster averages in parallel (MPI)
+// ---------------------------------------------------
 std::vector<double> calculate_cluster_average(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
     const float* matrix,
     const label_type* row_labels,
-    const label_type* col_labels)
+    const label_type* col_labels,
+    int rank, int size)
 {
-    std::vector<double> cluster_sum(num_row_labels * num_col_labels, 0.0);
-    std::vector<int> cluster_size(num_row_labels * num_col_labels, 0);
+    int rows_per_proc = num_rows / size;
+    int extra_rows = num_rows % size;
+    int start_row = rank * rows_per_proc + std::min(rank, extra_rows);
+    int end_row = start_row + rows_per_proc + (rank < extra_rows ? 1 : 0);
 
-    for(int i = 0; i < num_rows; i++)
+    std::vector<double> local_sum(num_row_labels * num_col_labels, 0.0);
+    std::vector<int> local_count(num_row_labels * num_col_labels, 0);
+
+    for(int i = start_row; i < end_row; i++)
     {
         for(int j = 0; j < num_cols; j++)
         {
-            auto item = matrix[i * num_cols + j];
-            auto row_label = row_labels[i];
-            auto col_label = col_labels[j];
-            cluster_sum[row_label * num_col_labels + col_label] += item;
-            cluster_size[row_label * num_col_labels + col_label] += 1;
+            int r = row_labels[i];
+            int c = col_labels[j];
+            local_sum[r * num_col_labels + c] += matrix[i * num_cols + j];
+            local_count[r * num_col_labels + c] += 1;
         }
     }
 
+    std::vector<double> global_sum(num_row_labels * num_col_labels);
+    std::vector<int> global_count(num_row_labels * num_col_labels);
+
+    MPI_Allreduce(local_sum.data(), global_sum.data(),
+                  num_row_labels * num_col_labels,
+                  MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(local_count.data(), global_count.data(),
+                  num_row_labels * num_col_labels,
+                  MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
     std::vector<double> cluster_avg(num_row_labels * num_col_labels, 0.0);
-    for(int i = 0; i < num_row_labels; i++)
-    {
-        for(int j = 0; j < num_col_labels; j++)
-        {
-            auto index = i * num_col_labels + j;
-            if(cluster_size[index] > 0)
-                cluster_avg[index] = cluster_sum[index] / cluster_size[index];
-        }
-    }
+    for(int i = 0; i < num_row_labels * num_col_labels; i++)
+        if(global_count[i] > 0)
+            cluster_avg[i] = global_sum[i] / global_count[i];
+
     return cluster_avg;
 }
 
@@ -49,12 +59,12 @@ std::vector<double> calculate_cluster_average(
 // ---------------------------------------------------
 double calculate_distance(double avg, double item)
 {
-    double diff = (avg - item);
+    double diff = avg - item;
     return diff * diff;
 }
 
 // ---------------------------------------------------
-// Update row labels (parallelized by row partitioning)
+// Update row labels (parallel by rank)
 // ---------------------------------------------------
 std::pair<int, double> update_row_labels(
     int num_rows, int num_cols,
@@ -67,7 +77,6 @@ std::pair<int, double> update_row_labels(
 {
     int rows_per_proc = num_rows / size;
     int extra_rows = num_rows % size;
-
     int start_row = rank * rows_per_proc + std::min(rank, extra_rows);
     int end_row = start_row + rows_per_proc + (rank < extra_rows ? 1 : 0);
 
@@ -85,8 +94,8 @@ std::pair<int, double> update_row_labels(
             for(int j = 0; j < num_cols; j++)
             {
                 int col_label = col_labels[j];
-                double y = cluster_avg[k * num_col_labels + col_label];
-                dist += calculate_distance(y, matrix[i * num_cols + j]);
+                dist += calculate_distance(cluster_avg[k * num_col_labels + col_label],
+                                           matrix[i * num_cols + j]);
             }
             if(dist < best_dist)
             {
@@ -100,7 +109,6 @@ std::pair<int, double> update_row_labels(
             row_labels[i] = best_label;
             local_updated++;
         }
-
         local_dist += best_dist;
     }
 
@@ -113,7 +121,7 @@ std::pair<int, double> update_row_labels(
 }
 
 // ---------------------------------------------------
-// Update column labels (same as serial, allreduce)
+// Update column labels (parallel by column partitioning)
 // ---------------------------------------------------
 std::pair<int, double> update_col_labels(
     int num_rows, int num_cols,
@@ -121,12 +129,20 @@ std::pair<int, double> update_col_labels(
     const float* matrix,
     const label_type* row_labels,
     label_type* col_labels,
-    const double* cluster_avg)
+    const double* cluster_avg,
+    int rank, int size)
 {
-    int num_updated = 0;
-    double total_dist = 0.0;
+    int cols_per_proc = num_cols / size;
+    int extra_cols = num_cols % size;
+    int start_col = rank * cols_per_proc + std::min(rank, extra_cols);
+    int end_col = start_col + cols_per_proc + (rank < extra_cols ? 1 : 0);
 
-    for(int j = 0; j < num_cols; j++)
+    std::vector<int> local_labels(end_col - start_col);
+
+    int local_updated = 0;
+    double local_dist = 0.0;
+
+    for(int j = start_col; j < end_col; j++)
     {
         int best_label = -1;
         double best_dist = INFINITY;
@@ -136,8 +152,8 @@ std::pair<int, double> update_col_labels(
             double dist = 0;
             for(int i = 0; i < num_rows; i++)
             {
-                int row_label = row_labels[i];
-                dist += calculate_distance(cluster_avg[row_label * num_col_labels + k],
+                int r = row_labels[i];
+                dist += calculate_distance(cluster_avg[r * num_col_labels + k],
                                            matrix[i * num_cols + j]);
             }
             if(dist < best_dist)
@@ -147,16 +163,22 @@ std::pair<int, double> update_col_labels(
             }
         }
 
+        local_labels[j - start_col] = best_label;
         if(col_labels[j] != best_label)
-        {
-            col_labels[j] = best_label;
-            num_updated++;
-        }
-
-        total_dist += best_dist;
+            local_updated++;
+        local_dist += best_dist;
     }
 
-    return {num_updated, total_dist};
+    // Gather all updated column labels to all ranks
+    MPI_Allgather(local_labels.data(), end_col - start_col, MPI_INT,
+                  col_labels, end_col - start_col, MPI_INT, MPI_COMM_WORLD);
+
+    int global_updated = 0;
+    double global_dist = 0.0;
+    MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&local_dist, &global_dist, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    return {global_updated, global_dist};
 }
 
 // ---------------------------------------------------
@@ -170,10 +192,11 @@ std::pair<int, double> cluster_mpi_iteration(
     label_type* col_labels,
     int rank, int size)
 {
-    // calculate cluster averages (serial part)
-    auto cluster_avg = calculate_cluster_average(
-        num_rows, num_cols, num_row_labels, num_col_labels,
-        matrix, row_labels, col_labels);
+    // MPI-aware cluster averages
+    auto cluster_avg = calculate_cluster_average(num_rows, num_cols,
+                                                 num_row_labels, num_col_labels,
+                                                 matrix, row_labels, col_labels,
+                                                 rank, size);
 
     auto [rows_updated, dist_rows] = update_row_labels(
         num_rows, num_cols, num_row_labels, num_col_labels,
@@ -181,7 +204,7 @@ std::pair<int, double> cluster_mpi_iteration(
 
     auto [cols_updated, dist_cols] = update_col_labels(
         num_rows, num_cols, num_col_labels,
-        matrix, row_labels, col_labels, cluster_avg.data());
+        matrix, row_labels, col_labels, cluster_avg.data(), rank, size);
 
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }

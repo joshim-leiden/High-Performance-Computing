@@ -257,6 +257,7 @@ void cluster_mpi(
 // ---------------------------------------------------
 // Main function with MPI
 // ---------------------------------------------------
+
 int main(int argc, const char* argv[])
 {
     MPI_Init(&argc, (char***)&argv);
@@ -281,6 +282,10 @@ int main(int argc, const char* argv[])
         MPI_Finalize();
         return EXIT_FAILURE;
     }
+
+    // Broadcast initial labels to all ranks
+    MPI_Bcast(row_labels.data(), num_rows, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(col_labels.data(), num_cols, MPI_INT, 0, MPI_COMM_WORLD);
 
     cluster_mpi(num_rows, num_cols, num_row_labels, num_col_labels,
                 matrix.data(), row_labels.data(), col_labels.data(),

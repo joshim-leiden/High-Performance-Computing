@@ -327,7 +327,7 @@ int main(int argc,const char* argv[])
     int num_cols=0;
     int num_row_labels=0;
     int num_col_labels=0;
-    int max_iter=25;
+    int max_iter=50;
 
     if(!parse_arguments(
         argc,argv,

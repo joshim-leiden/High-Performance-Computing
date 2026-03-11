@@ -221,7 +221,6 @@ std::pair<int,double> update_col_labels(
     return {global_updated, global_dist};
 }
 
-// ---------------------------------------------------
 std::pair<int, double> cluster_mpi_iteration(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -230,21 +229,21 @@ std::pair<int, double> cluster_mpi_iteration(
     label_type* col_labels,
     int rank, int size)
 {
-    //  averages based on current labels
+    // averages based on current labels
     auto cluster_avg = calculate_cluster_average(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
         matrix, row_labels, col_labels,
         rank, size);
 
-    //  update rows
+    // update rows
     auto [rows_updated, dist_rows] = update_row_labels(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
         matrix, row_labels, col_labels,
         cluster_avg.data(), rank, size);
 
-    // recompute averages AFTER row updates
+    // recompute averages after row updates
     cluster_avg = calculate_cluster_average(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
@@ -258,8 +257,16 @@ std::pair<int, double> cluster_mpi_iteration(
         matrix, row_labels, col_labels,
         cluster_avg.data(), rank, size);
 
+    // recompute averages again after column updates for next iteration
+    cluster_avg = calculate_cluster_average(
+        num_rows, num_cols,
+        num_row_labels, num_col_labels,
+        matrix, row_labels, col_labels,
+        rank, size);
+
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }
+
 // ---------------------------------------------------
 void cluster_mpi(
     int num_rows, int num_cols,

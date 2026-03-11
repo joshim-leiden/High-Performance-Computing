@@ -73,7 +73,7 @@ double calculate_distance(double avg, double item) {
 }
 
 /**
- * Row label update (same as serial)
+ * Row label update (serial, run only on rank 0)
  */
 std::pair<int, double> update_row_labels(
     int num_rows,
@@ -127,7 +127,7 @@ std::pair<int, double> update_row_labels(
 }
 
 /**
- * Column label update (same as serial)
+ * Column label update (serial, run only on rank 0)
  */
 std::pair<int, double> update_col_labels(
     int num_rows,

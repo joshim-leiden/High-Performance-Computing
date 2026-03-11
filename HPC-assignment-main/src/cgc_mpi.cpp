@@ -5,6 +5,9 @@
 
 #include "common.h"
 
+/**
+ * Parallel cluster average calculation
+ */
 std::vector<double> calculate_cluster_average(
     int num_rows,
     int num_cols,
@@ -26,11 +29,11 @@ std::vector<double> calculate_cluster_average(
     for (int i = start; i < end; i++) {
         for (int j = 0; j < num_cols; j++) {
             auto item = matrix[i * num_cols + j];
-            auto r = row_labels[i];
-            auto c = col_labels[j];
+            auto row_label = row_labels[i];
+            auto col_label = col_labels[j];
 
-            local_sum[r * num_col_labels + c] += item;
-            local_count[r * num_col_labels + c] += 1;
+            local_sum[row_label * num_col_labels + col_label] += item;
+            local_count[row_label * num_col_labels + col_label] += 1;
         }
     }
 
@@ -61,11 +64,124 @@ std::vector<double> calculate_cluster_average(
     return cluster_avg;
 }
 
+/**
+ * Distance function
+ */
 double calculate_distance(double avg, double item) {
-    double diff = avg - item;
+    double diff = (avg - item);
     return diff * diff;
 }
 
+/**
+ * Row label update (same as serial)
+ */
+std::pair<int, double> update_row_labels(
+    int num_rows,
+    int num_cols,
+    int num_row_labels,
+    int num_col_labels,
+    const float* matrix,
+    label_type* row_labels,
+    const label_type* col_labels,
+    const double* cluster_avg)
+{
+    int num_updated = 0;
+    double total_dist = 0;
+
+    for (int i = 0; i < num_rows; i++) {
+
+        int best_label = -1;
+        double best_dist = INFINITY;
+
+        for (int k = 0; k < num_row_labels; k++) {
+
+            double dist = 0;
+
+            for (int j = 0; j < num_cols; j++) {
+
+                double item = matrix[i * num_cols + j];
+
+                int row_label = k;
+                int col_label = col_labels[j];
+
+                double y = cluster_avg[row_label * num_col_labels + col_label];
+
+                dist += calculate_distance(y, item);
+            }
+
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_label = k;
+            }
+        }
+
+        if (row_labels[i] != best_label) {
+            row_labels[i] = best_label;
+            num_updated++;
+        }
+
+        total_dist += best_dist;
+    }
+
+    return {num_updated, total_dist};
+}
+
+/**
+ * Column label update (same as serial)
+ */
+std::pair<int, double> update_col_labels(
+    int num_rows,
+    int num_cols,
+    int num_col_labels,
+    const float* matrix,
+    const label_type* row_labels,
+    label_type* col_labels,
+    const double* cluster_avg)
+{
+    int num_updated = 0;
+    double total_dist = 0;
+
+    for (int j = 0; j < num_cols; j++) {
+
+        int best_label = -1;
+        double best_dist = INFINITY;
+
+        for (int k = 0; k < num_col_labels; k++) {
+
+            double dist = 0;
+
+            for (int i = 0; i < num_rows; i++) {
+
+                auto item = matrix[i * num_cols + j];
+
+                auto row_label = row_labels[i];
+                auto col_label = k;
+
+                auto y = cluster_avg[row_label * num_col_labels + col_label];
+
+                dist += calculate_distance(y, item);
+            }
+
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_label = k;
+            }
+        }
+
+        if (col_labels[j] != best_label) {
+            col_labels[j] = best_label;
+            num_updated++;
+        }
+
+        total_dist += best_dist;
+    }
+
+    return {num_updated, total_dist};
+}
+
+/**
+ * One iteration of clustering
+ */
 std::pair<int, double> cluster_mpi_iteration(
     int num_rows,
     int num_cols,
@@ -92,6 +208,7 @@ std::pair<int, double> cluster_mpi_iteration(
     double total_dist_row = 0;
 
     if (rank == 0) {
+
         auto result = update_row_labels(
             num_rows,
             num_cols,
@@ -112,6 +229,7 @@ std::pair<int, double> cluster_mpi_iteration(
     double total_dist_col = 0;
 
     if (rank == 0) {
+
         auto result = update_col_labels(
             num_rows,
             num_cols,
@@ -133,6 +251,9 @@ std::pair<int, double> cluster_mpi_iteration(
     return {total_updated, total_dist};
 }
 
+/**
+ * Main clustering loop
+ */
 void cluster_mpi(
     int num_rows,
     int num_cols,
@@ -165,6 +286,7 @@ void cluster_mpi(
         iteration++;
 
         if (rank == 0) {
+
             auto average_dist = total_dist / (num_rows * num_cols);
 
             std::cout << "iteration " << iteration << ": "
@@ -182,6 +304,7 @@ void cluster_mpi(
         std::chrono::duration<double>(after - before).count();
 
     if (rank == 0) {
+
         std::cout << "clustering time total: "
                   << time_seconds << " seconds\n";
 
@@ -190,8 +313,11 @@ void cluster_mpi(
     }
 }
 
-int main(int argc, const char* argv[]) {
-
+/**
+ * Main
+ */
+int main(int argc, const char* argv[])
+{
     MPI_Init(&argc, (char***)&argv);
 
     int rank, size;
@@ -201,9 +327,14 @@ int main(int argc, const char* argv[]) {
     std::string output_file;
     std::vector<float> matrix;
     std::vector<label_type> row_labels, col_labels;
-    int num_rows = 0, num_cols = 0;
-    int num_row_labels = 0, num_col_labels = 0;
+
+    int num_rows = 0;
+    int num_cols = 0;
+    int num_row_labels = 0;
+    int num_col_labels = 0;
     int max_iter = 0;
+
+    auto before = std::chrono::high_resolution_clock::now();
 
     if (!parse_arguments(
             argc,
@@ -217,6 +348,7 @@ int main(int argc, const char* argv[]) {
             &col_labels,
             &output_file,
             &max_iter)) {
+
         MPI_Finalize();
         return EXIT_FAILURE;
     }
@@ -234,6 +366,7 @@ int main(int argc, const char* argv[]) {
         size);
 
     if (rank == 0) {
+
         write_labels(
             output_file,
             num_rows,
@@ -241,6 +374,14 @@ int main(int argc, const char* argv[]) {
             row_labels.data(),
             col_labels.data());
     }
+
+    auto after = std::chrono::high_resolution_clock::now();
+    auto time_seconds =
+        std::chrono::duration<double>(after - before).count();
+
+    if (rank == 0)
+        std::cout << "total execution time: "
+                  << time_seconds << " seconds\n";
 
     MPI_Finalize();
 

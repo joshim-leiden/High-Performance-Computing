@@ -58,7 +58,7 @@ std::vector<double> calculate_cluster_average(
 }
 
 /*
-Update row labels parallelized by columns (correct, distances summed globally)
+Update row labels parallelized by columns (correct, exact)
 */
 std::pair<int,double> update_row_labels(
     int num_rows, int num_cols,
@@ -77,24 +77,22 @@ std::pair<int,double> update_row_labels(
 
     int local_updated = 0;
     double local_dist = 0.0;
-    std::vector<label_type> new_row_labels(num_rows, -1);
 
     for (int i = 0; i < num_rows; i++) {
         std::vector<double> local_partial_dist(num_row_labels, 0.0);
 
-        // Compute partial distances for assigned columns
+        // Compute partial distances over assigned columns
         for (int j = start_col; j < end_col; j++) {
             int c = col_labels[j];
-            for (int k = 0; k < num_row_labels; k++) {
+            for (int k = 0; k < num_row_labels; k++)
                 local_partial_dist[k] += calculate_distance(cluster_avg[k * num_col_labels + c], matrix[i * num_cols + j]);
-            }
         }
 
-        // Sum distances across all ranks
+        // Sum partial distances globally across ranks
         std::vector<double> global_dist(num_row_labels, 0.0);
         MPI_Allreduce(local_partial_dist.data(), global_dist.data(), num_row_labels, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        // Pick best label based on global distance
+        // Pick best label after global sum
         int best_label = 0;
         double best_dist = global_dist[0];
         for (int k = 1; k < num_row_labels; k++) {
@@ -104,13 +102,10 @@ std::pair<int,double> update_row_labels(
             }
         }
 
-        new_row_labels[i] = best_label;
         if (row_labels[i] != best_label) local_updated++;
         local_dist += best_dist;
+        row_labels[i] = best_label;  // update label globally
     }
-
-    // Update row labels globally
-    MPI_Allreduce(new_row_labels.data(), row_labels, num_rows, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 
     int global_updated;
     double global_dist;
@@ -121,7 +116,7 @@ std::pair<int,double> update_row_labels(
 }
 
 /*
-Update column labels (parallel by columns)
+Update column labels parallelized by columns
 */
 std::pair<int,double> update_col_labels(
     int num_rows, int num_cols,

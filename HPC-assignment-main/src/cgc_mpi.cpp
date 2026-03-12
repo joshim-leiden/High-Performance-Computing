@@ -3,7 +3,6 @@
 #include <vector>
 #include <cmath>
 #include <mpi.h>
-
 #include "common.h"
 
 /**

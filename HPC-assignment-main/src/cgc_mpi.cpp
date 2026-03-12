@@ -5,7 +5,7 @@
 // #include <cmath>
 // #include <mpi.h>
 // #include "common.h"
-
+//m
 // // 0.7858
 
 // double calculate_distance(double avg, double item) {
@@ -383,7 +383,7 @@ std::vector<double> calculate_cluster_average(
     int extra = num_rows % size;
 
     int start = rank * rows_per_proc + std::min(rank, extra);
-    int count = rows_per_proc + (rank < extra);
+    int count = rows_per_proc + (rank < extra ? 1 : 0);
     int end = start + count;
 
     int num_clusters = num_row_labels * num_col_labels;
@@ -393,10 +393,8 @@ std::vector<double> calculate_cluster_average(
 
     for (int i = start; i < end; i++) {
         for (int j = 0; j < num_cols; j++) {
-
             int r = row_labels[i];
             int c = col_labels[j];
-
             int idx = r * num_col_labels + c;
 
             local_sum[idx] += matrix[i * num_cols + j];
@@ -444,7 +442,7 @@ std::pair<int,double> update_row_labels(
     int extra = num_rows % size;
 
     int start = rank * rows_per_proc + std::min(rank, extra);
-    int count = rows_per_proc + (rank < extra);
+    int count = rows_per_proc + (rank < extra ? 1 : 0);
     int end = start + count;
 
     int local_updated = 0;
@@ -453,23 +451,16 @@ std::pair<int,double> update_row_labels(
     std::vector<label_type> local_labels(count);
 
     for (int i = start; i < end; i++) {
-
         int best_label = -1;
         double best_dist = INFINITY;
 
         for (int k = 0; k < num_row_labels; k++) {
-
             double dist = 0;
-
             for (int j = 0; j < num_cols; j++) {
-
                 int c = col_labels[j];
-
-                dist += calculate_distance(
-                    cluster_avg[k * num_col_labels + c],
-                    matrix[i * num_cols + j]);
+                dist += calculate_distance(cluster_avg[k * num_col_labels + c],
+                                           matrix[i * num_cols + j]);
             }
-
             if (dist < best_dist) {
                 best_dist = dist;
                 best_label = k;
@@ -494,7 +485,7 @@ std::pair<int,double> update_row_labels(
     std::vector<int> displs(size);
 
     for (int r = 0; r < size; r++)
-        recvcounts[r] = rows_per_proc + (r < extra);
+        recvcounts[r] = rows_per_proc + (r < extra ? 1 : 0);
 
     displs[0] = 0;
     for (int r = 1; r < size; r++)
@@ -530,7 +521,7 @@ std::pair<int,double> update_col_labels(
     int extra = num_cols % size;
 
     int start = rank * cols_per_proc + std::min(rank, extra);
-    int count = cols_per_proc + (rank < extra);
+    int count = cols_per_proc + (rank < extra ? 1 : 0);
     int end = start + count;
 
     int local_updated = 0;
@@ -539,23 +530,16 @@ std::pair<int,double> update_col_labels(
     std::vector<label_type> local_labels(count);
 
     for (int j = start; j < end; j++) {
-
         int best_label = -1;
         double best_dist = INFINITY;
 
         for (int k = 0; k < num_col_labels; k++) {
-
             double dist = 0;
-
             for (int i = 0; i < num_rows; i++) {
-
                 int r = row_labels[i];
-
-                dist += calculate_distance(
-                    cluster_avg[r * num_col_labels + k],
-                    matrix[i * num_cols + j]);
+                dist += calculate_distance(cluster_avg[r * num_col_labels + k],
+                                           matrix[i * num_cols + j]);
             }
-
             if (dist < best_dist) {
                 best_dist = dist;
                 best_label = k;
@@ -580,7 +564,7 @@ std::pair<int,double> update_col_labels(
     std::vector<int> displs(size);
 
     for (int r = 0; r < size; r++)
-        recvcounts[r] = cols_per_proc + (r < extra);
+        recvcounts[r] = cols_per_proc + (r < extra ? 1 : 0);
 
     displs[0] = 0;
     for (int r = 1; r < size; r++)
@@ -598,6 +582,9 @@ std::pair<int,double> update_col_labels(
     return {global_updated, global_dist};
 }
 
+/*
+One iteration of MPI clustering
+*/
 std::pair<int,double> cluster_mpi_iteration(
     int num_rows,
     int num_cols,
@@ -609,18 +596,28 @@ std::pair<int,double> cluster_mpi_iteration(
     int rank,
     int size)
 {
+    // Compute cluster averages initially
     auto cluster_avg = calculate_cluster_average(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
         matrix, row_labels, col_labels,
         rank, size);
 
+    // Update row labels
     auto [rows_updated, dist_rows] = update_row_labels(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
         matrix, row_labels, col_labels,
         cluster_avg.data(), rank, size);
 
+    // **Recompute cluster averages after row update**
+    cluster_avg = calculate_cluster_average(
+        num_rows, num_cols,
+        num_row_labels, num_col_labels,
+        matrix, row_labels, col_labels,
+        rank, size);
+
+    // Update column labels
     auto [cols_updated, dist_cols] = update_col_labels(
         num_rows, num_cols,
         num_col_labels,
@@ -630,6 +627,9 @@ std::pair<int,double> cluster_mpi_iteration(
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }
 
+/*
+Main MPI clustering loop
+*/
 void cluster_mpi(
     int num_rows,
     int num_cols,
@@ -647,7 +647,6 @@ void cluster_mpi(
     auto before = std::chrono::high_resolution_clock::now();
 
     while (iteration < max_iterations) {
-
         auto [updated, dist] = cluster_mpi_iteration(
             num_rows, num_cols,
             num_row_labels, num_col_labels,

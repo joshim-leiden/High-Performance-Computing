@@ -420,28 +420,37 @@ std::pair<int,double> update_row_labels(
     const double* cluster_avg,
     int rank, int size)
 {
-    int rows_per_proc = num_rows / size;
-    int extra_rows = num_rows % size;
-    int start = rank * rows_per_proc + std::min(rank, extra_rows);
-    int count = rows_per_proc + (rank < extra_rows ? 1 : 0);
-    int end = start + count;
+    int cols_per_proc = num_cols / size;
+    int extra = num_cols % size;
+    int start_col = rank * cols_per_proc + std::min(rank, extra);
+    int count_col = cols_per_proc + (rank < extra ? 1 : 0);
+    int end_col = start_col + count_col;
 
     int local_updated = 0;
     double local_dist = 0;
-    std::vector<label_type> local_labels(count);
 
-    for (int i = start; i < end; i++) {
+    std::vector<label_type> local_row_labels(num_rows);
+
+    // Loop over all rows, but only a subset of columns
+    for (int i = 0; i < num_rows; i++) {
         int best_label = -1;
         double best_dist = INFINITY;
+
         for (int k = 0; k < num_row_labels; k++) {
             double dist = 0;
-            for (int j = 0; j < num_cols; j++) {
+            for (int j = start_col; j < end_col; j++) {
                 int c = col_labels[j];
-                dist += calculate_distance(cluster_avg[k * num_col_labels + c], matrix[i * num_cols + j]);
+                dist += calculate_distance(cluster_avg[k * num_col_labels + c],
+                                           matrix[i * num_cols + j]);
             }
-            if (dist < best_dist) { best_dist = dist; best_label = k; }
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_label = k;
+            }
         }
-        local_labels[i - start] = best_label;
+
+        local_row_labels[i] = best_label;
+
         if (row_labels[i] != best_label) local_updated++;
         local_dist += best_dist;
     }
@@ -451,16 +460,11 @@ std::pair<int,double> update_row_labels(
     MPI_Allreduce(&local_updated, &global_updated, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&local_dist, &global_dist, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    std::vector<int> recvcounts(size), displs(size);
-    for (int r = 0; r < size; r++) recvcounts[r] = rows_per_proc + (r < extra_rows ? 1 : 0);
-    displs[0] = 0;
-    for (int r = 1; r < size; r++) displs[r] = displs[r-1] + recvcounts[r-1];
-
-    MPI_Allgatherv(local_labels.data(), count, MPI_INT, row_labels, recvcounts.data(), displs.data(), MPI_INT, MPI_COMM_WORLD);
+    // Gather final row labels from all ranks (reduce by rank voting if needed)
+    MPI_Allreduce(local_row_labels.data(), row_labels, num_rows, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
     return {global_updated, global_dist};
 }
-
 // Update column labels (parallel by columns)
 std::pair<int,double> update_col_labels(
     int num_rows, int num_cols,

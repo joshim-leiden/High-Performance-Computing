@@ -6,13 +6,14 @@
 #include <mpi.h>
 #include "common.h"
 
-// ---------------------------------------------------
+// 0.7858
+
 double calculate_distance(double avg, double item) {
     double diff = avg - item;
     return diff * diff;
 }
 
-// ---------------------------------------------------
+// computing diff betn item-cluster avg
 std::vector<double> calculate_cluster_average(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -59,7 +60,7 @@ std::vector<double> calculate_cluster_average(
     return cluster_avg;
 }
 
-// ---------------------------------------------------
+// computuing cluster averages across row and column in parallel
 std::pair<int,double> update_row_labels(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -140,7 +141,7 @@ std::pair<int,double> update_row_labels(
     return {global_updated, global_dist};
 }
 
-// ---------------------------------------------------
+// Updateing row labels as per current cluster average in parallel
 std::pair<int,double> update_col_labels(
     int num_rows, int num_cols,
     int num_col_labels,
@@ -221,6 +222,7 @@ std::pair<int,double> update_col_labels(
     return {global_updated, global_dist};
 }
 
+// Updateing column labels as per current cluster averages in parallel
 std::pair<int, double> cluster_mpi_iteration(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -229,7 +231,7 @@ std::pair<int, double> cluster_mpi_iteration(
     label_type* col_labels,
     int rank, int size)
 {
-    // averages based on current labels
+    // compute averages once
     auto cluster_avg = calculate_cluster_average(
         num_rows, num_cols,
         num_row_labels, num_col_labels,
@@ -243,31 +245,19 @@ std::pair<int, double> cluster_mpi_iteration(
         matrix, row_labels, col_labels,
         cluster_avg.data(), rank, size);
 
-    // recompute averages after row updates
-    cluster_avg = calculate_cluster_average(
-        num_rows, num_cols,
-        num_row_labels, num_col_labels,
-        matrix, row_labels, col_labels,
-        rank, size);
-
-    // update columns with fresh averages
+    // update columns using SAME averages
     auto [cols_updated, dist_cols] = update_col_labels(
         num_rows, num_cols,
         num_col_labels,
         matrix, row_labels, col_labels,
         cluster_avg.data(), rank, size);
 
-    // recompute averages again after column updates for next iteration
-    cluster_avg = calculate_cluster_average(
-        num_rows, num_cols,
-        num_row_labels, num_col_labels,
-        matrix, row_labels, col_labels,
-        rank, size);
-
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }
 
-// ---------------------------------------------------
+
+// Performs one iteration of co-clustering (update rows then columns) in parallel
+
 void cluster_mpi(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -308,7 +298,7 @@ void cluster_mpi(
     }
 }
 
-// ---------------------------------------------------
+// main mpi co-clustering loop
 int main(int argc,const char* argv[])
 {
     MPI_Init(&argc,(char***)&argv);

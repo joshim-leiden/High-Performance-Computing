@@ -10,10 +10,11 @@ double calculate_distance(double avg, double item) {
     double diff = avg - item;
     return diff * diff;
 }
+//m
 
-/*
-Compute cluster averages
-*/
+
+ // Compute cluster average
+
 std::vector<double> calculate_cluster_average(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -57,9 +58,9 @@ std::vector<double> calculate_cluster_average(
     return cluster_avg;
 }
 
-/*
-Update row labels parallelized by columns (correct, exact)
-*/
+
+// Update row labels parallelized by columns
+
 std::pair<int,double> update_row_labels(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -115,9 +116,9 @@ std::pair<int,double> update_row_labels(
     return {global_updated, global_dist};
 }
 
-/*
-Update column labels parallelized by columns
-*/
+
+// Update column labels parallelized by columns
+
 std::pair<int,double> update_col_labels(
     int num_rows, int num_cols,
     int num_col_labels,
@@ -169,9 +170,9 @@ std::pair<int,double> update_col_labels(
     return {global_updated, global_dist};
 }
 
-/*
-One iteration of MPI clustering
-*/
+
+//One iteration of MPI clustering
+
 std::pair<int,double> cluster_mpi_iteration(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,
@@ -187,9 +188,9 @@ std::pair<int,double> cluster_mpi_iteration(
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }
 
-/*
-Main MPI clustering loop
-*/
+
+// Main MPI  loop
+
 void cluster_mpi(
     int num_rows, int num_cols,
     int num_row_labels, int num_col_labels,

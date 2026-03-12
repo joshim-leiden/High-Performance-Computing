@@ -1,48 +1,15 @@
 #include <chrono>
-#include <cmath>
 #include <iostream>
-#include <type_traits>
 #include <vector>
-
+#include <cmath>
 #include <mpi.h>
 
 #include "common.h"
 
-static MPI_Datatype mpi_label_type() {
-    if constexpr (std::is_same_v<label_type, char>) {
-        return MPI_CHAR;
-    } else if constexpr (std::is_same_v<label_type, signed char>) {
-        return MPI_SIGNED_CHAR;
-    } else if constexpr (std::is_same_v<label_type, unsigned char>) {
-        return MPI_UNSIGNED_CHAR;
-    } else if constexpr (std::is_same_v<label_type, short>) {
-        return MPI_SHORT;
-    } else if constexpr (std::is_same_v<label_type, unsigned short>) {
-        return MPI_UNSIGNED_SHORT;
-    } else if constexpr (std::is_same_v<label_type, int>) {
-        return MPI_INT;
-    } else if constexpr (std::is_same_v<label_type, unsigned int>) {
-        return MPI_UNSIGNED;
-    } else if constexpr (std::is_same_v<label_type, long>) {
-        return MPI_LONG;
-    } else if constexpr (std::is_same_v<label_type, unsigned long>) {
-        return MPI_UNSIGNED_LONG;
-    } else if constexpr (std::is_same_v<label_type, long long>) {
-        return MPI_LONG_LONG;
-    } else if constexpr (std::is_same_v<label_type, unsigned long long>) {
-        return MPI_UNSIGNED_LONG_LONG;
-    } else {
-        static_assert(
-            std::is_integral_v<label_type>,
-            "Unsupported label_type for MPI communication");
-        return MPI_INT;
-    }
-}
-
 /**
  * Partition columns nearly evenly across MPI ranks.
  */
-static inline void get_col_partition(
+static void get_col_partition(
     int num_cols,
     int world_size,
     std::vector<int>& counts,
@@ -64,57 +31,39 @@ static inline void get_col_partition(
 /**
  * Local matrix storage is column-major by local column:
  * local_matrix[j_local * num_rows + i]
- *
+ */
+
+/**
  * This function returns a matrix of size (num_row_labels, num_col_labels)
  * that stores the average value for each combination of row label and
- * column label across all MPI ranks.
+ * column label. In other words, the entry at coordinate (x, y) is the
+ * average over all input values having row label x and column label y.
+ *
+ * This is identical to the serial implementation and is executed only on rank 0
+ * to preserve exact serial behavior.
  */
 std::vector<double> calculate_cluster_average(
     int num_rows,
-    int local_num_cols,
+    int num_cols,
     int num_row_labels,
     int num_col_labels,
-    const float* local_matrix,
+    const float* matrix,
     const label_type* row_labels,
-    const label_type* local_col_labels,
-    MPI_Comm comm) {
-    auto local_cluster_sum =
+    const label_type* col_labels) {
+    auto cluster_sum =
         std::vector<double>(num_row_labels * num_col_labels, 0.0);
-    auto global_cluster_sum =
-        std::vector<double>(num_row_labels * num_col_labels, 0.0);
-
-    auto local_cluster_size =
-        std::vector<int>(num_row_labels * num_col_labels, 0);
-    auto global_cluster_size =
-        std::vector<int>(num_row_labels * num_col_labels, 0);
+    auto cluster_size = std::vector<int>(num_row_labels * num_col_labels, 0);
 
     for (int i = 0; i < num_rows; i++) {
-        auto row_label = row_labels[i];
-        for (int j = 0; j < local_num_cols; j++) {
-            auto item = local_matrix[j * num_rows + i];
-            auto col_label = local_col_labels[j];
-            auto index = row_label * num_col_labels + col_label;
+        for (int j = 0; j < num_cols; j++) {
+            auto item = matrix[i * num_cols + j];
+            auto row_label = row_labels[i];
+            auto col_label = col_labels[j];
 
-            local_cluster_sum[index] += item;
-            local_cluster_size[index] += 1;
+            cluster_sum[row_label * num_col_labels + col_label] += item;
+            cluster_size[row_label * num_col_labels + col_label] += 1;
         }
     }
-
-    MPI_Allreduce(
-        local_cluster_sum.data(),
-        global_cluster_sum.data(),
-        (int)global_cluster_sum.size(),
-        MPI_DOUBLE,
-        MPI_SUM,
-        comm);
-
-    MPI_Allreduce(
-        local_cluster_size.data(),
-        global_cluster_size.data(),
-        (int)global_cluster_size.size(),
-        MPI_INT,
-        MPI_SUM,
-        comm);
 
     auto cluster_avg = std::vector<double>(num_row_labels * num_col_labels);
 
@@ -122,7 +71,7 @@ std::vector<double> calculate_cluster_average(
         for (int j = 0; j < num_col_labels; j++) {
             auto index = i * num_col_labels + j;
             cluster_avg[index] =
-                double(global_cluster_sum[index]) / double(global_cluster_size[index]);
+                double(cluster_sum[index]) / double(cluster_size[index]);
         }
     }
 
@@ -138,57 +87,38 @@ double calculate_distance(double avg, double item) {
  * Update the labels along the rows of the matrix. This function returns
  * both the number of rows that changed their label and the total distance.
  * If the first return value is zero, then no row was updated.
+ *
+ * This is identical to the serial implementation and is executed only on rank 0
+ * to preserve exact serial behavior.
  */
 std::pair<int, double> update_row_labels(
     int num_rows,
-    int local_num_cols,
+    int num_cols,
     int num_row_labels,
     int num_col_labels,
-    const float* local_matrix,
+    const float* matrix,
     label_type* row_labels,
-    const label_type* local_col_labels,
-    const double* cluster_avg,
-    MPI_Comm comm) {
-    auto local_distances =
-        std::vector<double>(num_rows * num_row_labels, 0.0);
-    auto global_distances =
-        std::vector<double>(num_rows * num_row_labels, 0.0);
-
-    for (int i = 0; i < num_rows; i++) {
-        for (int k = 0; k < num_row_labels; k++) {
-            double dist = 0.0;
-
-            for (int j = 0; j < local_num_cols; j++) {
-                double item = local_matrix[j * num_rows + i];
-
-                int row_label = k;
-                int col_label = local_col_labels[j];
-                double y = cluster_avg[row_label * num_col_labels + col_label];
-
-                dist += calculate_distance(y, item);
-            }
-
-            local_distances[i * num_row_labels + k] = dist;
-        }
-    }
-
-    MPI_Allreduce(
-        local_distances.data(),
-        global_distances.data(),
-        (int)global_distances.size(),
-        MPI_DOUBLE,
-        MPI_SUM,
-        comm);
-
+    const label_type* col_labels,
+    const double* cluster_avg) {
     int num_updated = 0;
-    double total_dist = 0.0;
+    double total_dist = 0;
 
     for (int i = 0; i < num_rows; i++) {
         int best_label = -1;
         double best_dist = INFINITY;
 
         for (int k = 0; k < num_row_labels; k++) {
-            double dist = global_distances[i * num_row_labels + k];
+            double dist = 0;
+
+            for (int j = 0; j < num_cols; j++) {
+                double item = matrix[i * num_cols + j];
+
+                int row_label = k;
+                int col_label = col_labels[j];
+                double y = cluster_avg[row_label * num_col_labels + col_label];
+
+                dist += calculate_distance(y, item);
+            }
 
             if (dist < best_dist) {
                 best_dist = dist;
@@ -197,7 +127,7 @@ std::pair<int, double> update_row_labels(
         }
 
         if (row_labels[i] != best_label) {
-            row_labels[i] = (label_type)best_label;
+            row_labels[i] = best_label;
             num_updated++;
         }
 
@@ -209,10 +139,12 @@ std::pair<int, double> update_row_labels(
 
 /**
  * Update the labels along the columns of the matrix. This function returns
- * the number of columns that changed their label and the total distance.
+ * the number of columns that changed their label label and the total distance.
  * If the first return value is zero, then no column was updated.
+ *
+ * This is the local MPI version and matches the serial logic exactly per column.
  */
-std::pair<int, double> update_col_labels(
+std::pair<int, double> update_col_labels_local(
     int num_rows,
     int local_num_cols,
     int num_col_labels,
@@ -247,7 +179,7 @@ std::pair<int, double> update_col_labels(
         }
 
         if (local_col_labels[j] != best_label) {
-            local_col_labels[j] = (label_type)best_label;
+            local_col_labels[j] = best_label;
             num_updated++;
         }
 
@@ -258,75 +190,13 @@ std::pair<int, double> update_col_labels(
 }
 
 /**
- * Perform one iteration of the co-clustering algorithm. This function updates
- * the labels in both `row_labels` and `col_labels`, and returns the total
- * number of labels that changed.
- */
-std::pair<int, double> cluster_mpi_iteration(
-    int num_rows,
-    int local_num_cols,
-    int num_row_labels,
-    int num_col_labels,
-    const float* local_matrix,
-    label_type* row_labels,
-    label_type* local_col_labels,
-    MPI_Comm comm) {
-    auto cluster_avg = calculate_cluster_average(
-        num_rows,
-        local_num_cols,
-        num_row_labels,
-        num_col_labels,
-        local_matrix,
-        row_labels,
-        local_col_labels,
-        comm);
-
-    auto [num_rows_updated, total_dist_row] = update_row_labels(
-        num_rows,
-        local_num_cols,
-        num_row_labels,
-        num_col_labels,
-        local_matrix,
-        row_labels,
-        local_col_labels,
-        cluster_avg.data(),
-        comm);
-
-    auto [num_cols_updated_local, total_dist_col_local] = update_col_labels(
-        num_rows,
-        local_num_cols,
-        num_col_labels,
-        local_matrix,
-        row_labels,
-        local_col_labels,
-        cluster_avg.data());
-
-    int num_cols_updated = 0;
-    double total_dist_col = 0.0;
-
-    MPI_Allreduce(
-        &num_cols_updated_local,
-        &num_cols_updated,
-        1,
-        MPI_INT,
-        MPI_SUM,
-        comm);
-
-    MPI_Allreduce(
-        &total_dist_col_local,
-        &total_dist_col,
-        1,
-        MPI_DOUBLE,
-        MPI_SUM,
-        comm);
-
-    return {num_rows_updated + num_cols_updated, total_dist_row + total_dist_col};
-}
-
-/**
- * Repeatedly calls `cluster_mpi_iteration` to iteratively update the
- * labels along the rows and columns. This function performs
- * `max_iterations` iterations or until convergence.
+ * Repeatedly performs the co-clustering algorithm.
+ *
+ * To preserve exact serial behavior:
+ * - rank 0 computes cluster averages serially
+ * - rank 0 updates row labels serially
+ * - all ranks update their local columns in parallel
+ * - updated column labels are gathered back to rank 0
  */
 void cluster_mpi(
     int num_rows,
@@ -334,27 +204,116 @@ void cluster_mpi(
     int local_num_cols,
     int num_row_labels,
     int num_col_labels,
+    float* matrix,              // full matrix only valid on rank 0
     float* local_matrix,
     label_type* row_labels,
+    label_type* col_labels,     // full col_labels only valid on rank 0
     label_type* local_col_labels,
     int max_iterations,
     MPI_Comm comm) {
-    int world_rank = 0;
+    int world_rank, world_size;
     MPI_Comm_rank(comm, &world_rank);
+    MPI_Comm_size(comm, &world_size);
+
+    std::vector<int> col_counts, col_displs;
+    get_col_partition(num_cols, world_size, col_counts, col_displs);
 
     int iteration = 0;
     auto before = std::chrono::high_resolution_clock::now();
 
+    std::vector<double> cluster_avg(num_row_labels * num_col_labels, 0.0);
+
     while (iteration < max_iterations) {
-        auto [num_updated, total_dist] = cluster_mpi_iteration(
+        int num_rows_updated = 0;
+        double total_dist_row = 0.0;
+
+        // Rank 0 performs exactly the same serial work as cgc_serial
+        if (world_rank == 0) {
+            cluster_avg = calculate_cluster_average(
+                num_rows,
+                num_cols,
+                num_row_labels,
+                num_col_labels,
+                matrix,
+                row_labels,
+                col_labels);
+
+            auto result = update_row_labels(
+                num_rows,
+                num_cols,
+                num_row_labels,
+                num_col_labels,
+                matrix,
+                row_labels,
+                col_labels,
+                cluster_avg.data());
+
+            num_rows_updated = result.first;
+            total_dist_row = result.second;
+        }
+
+        // Broadcast updated row labels and old cluster_avg to all ranks
+        MPI_Bcast(row_labels, num_rows, MPI_INT, 0, comm);
+        MPI_Bcast(
+            cluster_avg.data(),
+            int(cluster_avg.size()),
+            MPI_DOUBLE,
+            0,
+            comm);
+
+        // Parallel column update
+        auto [num_cols_updated_local, total_dist_col_local] = update_col_labels_local(
             num_rows,
             local_num_cols,
-            num_row_labels,
             num_col_labels,
             local_matrix,
             row_labels,
             local_col_labels,
+            cluster_avg.data());
+
+        int num_cols_updated = 0;
+        double total_dist_col = 0.0;
+
+        MPI_Reduce(
+            &num_cols_updated_local,
+            &num_cols_updated,
+            1,
+            MPI_INT,
+            MPI_SUM,
+            0,
             comm);
+
+        MPI_Reduce(
+            &total_dist_col_local,
+            &total_dist_col,
+            1,
+            MPI_DOUBLE,
+            MPI_SUM,
+            0,
+            comm);
+
+        // Gather full column labels back to rank 0
+        MPI_Gatherv(
+            local_col_labels,
+            local_num_cols,
+            MPI_INT,
+            world_rank == 0 ? col_labels : nullptr,
+            col_counts.data(),
+            col_displs.data(),
+            MPI_INT,
+            0,
+            comm);
+
+        int num_updated = 0;
+        double total_dist = 0.0;
+
+        if (world_rank == 0) {
+            num_updated = num_rows_updated + num_cols_updated;
+            total_dist = total_dist_row + total_dist_col;
+        }
+
+        // Broadcast convergence info so all ranks stop together
+        MPI_Bcast(&num_updated, 1, MPI_INT, 0, comm);
 
         iteration++;
 
@@ -388,8 +347,6 @@ int main(int argc, const char* argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
-    MPI_Datatype MPI_LABEL_TYPE = mpi_label_type();
-
     std::string output_file;
     std::vector<float> matrix;
     std::vector<label_type> row_labels, col_labels;
@@ -401,6 +358,7 @@ int main(int argc, const char* argv[]) {
 
     int parse_ok = 1;
 
+    // Parse arguments only on rank 0
     if (world_rank == 0) {
         if (!parse_arguments(
                 argc,
@@ -424,38 +382,41 @@ int main(int argc, const char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    // Broadcast scalar metadata
     MPI_Bcast(&num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_row_labels, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_col_labels, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&max_iter, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
+    // All ranks need row_labels
     if (world_rank != 0) {
         row_labels.resize(num_rows);
     }
+    MPI_Bcast(row_labels.data(), num_rows, MPI_INT, 0, MPI_COMM_WORLD);
 
-    MPI_Bcast(row_labels.data(), num_rows, MPI_LABEL_TYPE, 0, MPI_COMM_WORLD);
-
+    // Partition columns
     std::vector<int> col_counts, col_displs;
     get_col_partition(num_cols, world_size, col_counts, col_displs);
-
     int local_num_cols = col_counts[world_rank];
 
+    // Scatter initial column labels
     std::vector<label_type> local_col_labels(local_num_cols);
-
     MPI_Scatterv(
         world_rank == 0 ? col_labels.data() : nullptr,
         col_counts.data(),
         col_displs.data(),
-        MPI_LABEL_TYPE,
+        MPI_INT,
         local_col_labels.data(),
         local_num_cols,
-        MPI_LABEL_TYPE,
+        MPI_INT,
         0,
         MPI_COMM_WORLD);
 
+    // Local matrix stores assigned columns in column-major layout
     std::vector<float> local_matrix(num_rows * local_num_cols);
 
+    // Root converts full matrix from row-major to column-block-contiguous storage
     std::vector<float> matrix_col_major;
     std::vector<int> send_counts_matrix, send_displs_matrix;
 
@@ -488,33 +449,22 @@ int main(int argc, const char* argv[]) {
         0,
         MPI_COMM_WORLD);
 
+    // Run clustering
     cluster_mpi(
         num_rows,
         num_cols,
         local_num_cols,
         num_row_labels,
         num_col_labels,
+        world_rank == 0 ? matrix.data() : nullptr,
         local_matrix.data(),
         row_labels.data(),
+        world_rank == 0 ? col_labels.data() : nullptr,
         local_col_labels.data(),
         max_iter,
         MPI_COMM_WORLD);
 
-    if (world_rank == 0) {
-        col_labels.resize(num_cols);
-    }
-
-    MPI_Gatherv(
-        local_col_labels.data(),
-        local_num_cols,
-        MPI_LABEL_TYPE,
-        world_rank == 0 ? col_labels.data() : nullptr,
-        col_counts.data(),
-        col_displs.data(),
-        MPI_LABEL_TYPE,
-        0,
-        MPI_COMM_WORLD);
-
+    // Write resulting labels
     if (world_rank == 0) {
         write_labels(
             output_file,

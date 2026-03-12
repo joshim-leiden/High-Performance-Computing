@@ -348,6 +348,7 @@
 //     MPI_Finalize();
 // }
 
+//m
 
 #include <chrono>
 #include <iostream>
@@ -364,8 +365,8 @@ double calculate_distance(double avg, double item) {
 }
 
 /*
-Compute cluster averages using distributed rows.
-Each process computes partial sums and counts, then reduces them.
+Compute cluster averages.
+Each process computes partial sums then reduces them globally.
 */
 std::vector<double> calculate_cluster_average(
     int num_rows,
@@ -395,10 +396,11 @@ std::vector<double> calculate_cluster_average(
 
             int r = row_labels[i];
             int c = col_labels[j];
+
             int idx = r * num_col_labels + c;
 
             local_sum[idx] += matrix[i * num_cols + j];
-            local_count[idx]++;
+            local_count[idx] += 1;
         }
     }
 
@@ -423,9 +425,8 @@ std::vector<double> calculate_cluster_average(
     return cluster_avg;
 }
 
-
 /*
-Update row labels in parallel.
+Update row labels
 */
 std::pair<int,double> update_row_labels(
     int num_rows,
@@ -492,10 +493,12 @@ std::pair<int,double> update_row_labels(
     std::vector<int> recvcounts(size);
     std::vector<int> displs(size);
 
-    for (int r = 0; r < size; r++) {
+    for (int r = 0; r < size; r++)
         recvcounts[r] = rows_per_proc + (r < extra);
-        displs[r] = r * rows_per_proc + std::min(r, extra);
-    }
+
+    displs[0] = 0;
+    for (int r = 1; r < size; r++)
+        displs[r] = displs[r-1] + recvcounts[r-1];
 
     MPI_Allgatherv(local_labels.data(),
                    count,
@@ -509,9 +512,8 @@ std::pair<int,double> update_row_labels(
     return {global_updated, global_dist};
 }
 
-
 /*
-Update column labels in parallel.
+Update column labels
 */
 std::pair<int,double> update_col_labels(
     int num_rows,
@@ -577,10 +579,12 @@ std::pair<int,double> update_col_labels(
     std::vector<int> recvcounts(size);
     std::vector<int> displs(size);
 
-    for (int r = 0; r < size; r++) {
+    for (int r = 0; r < size; r++)
         recvcounts[r] = cols_per_proc + (r < extra);
-        displs[r] = r * cols_per_proc + std::min(r, extra);
-    }
+
+    displs[0] = 0;
+    for (int r = 1; r < size; r++)
+        displs[r] = displs[r-1] + recvcounts[r-1];
 
     MPI_Allgatherv(local_labels.data(),
                    count,
@@ -594,10 +598,6 @@ std::pair<int,double> update_col_labels(
     return {global_updated, global_dist};
 }
 
-
-/*
-One clustering iteration (matches serial algorithm exactly)
-*/
 std::pair<int,double> cluster_mpi_iteration(
     int num_rows,
     int num_cols,
@@ -630,10 +630,6 @@ std::pair<int,double> cluster_mpi_iteration(
     return {rows_updated + cols_updated, dist_rows + dist_cols};
 }
 
-
-/*
-Main clustering loop
-*/
 void cluster_mpi(
     int num_rows,
     int num_cols,
@@ -662,10 +658,9 @@ void cluster_mpi(
 
         if (rank == 0) {
             double avg_dist = dist / (num_rows * num_cols);
-
             std::cout << "iteration " << iteration
                       << ": " << updated
-                      << " labels updated, avg error "
+                      << " labels updated, average error "
                       << avg_dist << "\n";
         }
 
@@ -676,19 +671,17 @@ void cluster_mpi(
     auto after = std::chrono::high_resolution_clock::now();
     double time = std::chrono::duration<double>(after - before).count();
 
-    if (rank == 0) {
+    if (rank == 0)
         std::cout << "clustering time total: " << time << " seconds\n";
-    }
 }
 
-
-int main(int argc, const char* argv[])
+int main(int argc,const char* argv[])
 {
-    MPI_Init(&argc, (char***)&argv);
+    MPI_Init(&argc,(char***)&argv);
 
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    int rank,size;
+    MPI_Comm_rank(MPI_COMM_WORLD,&rank);
+    MPI_Comm_size(MPI_COMM_WORLD,&size);
 
     std::string output_file;
 
@@ -696,41 +689,37 @@ int main(int argc, const char* argv[])
     std::vector<label_type> row_labels;
     std::vector<label_type> col_labels;
 
-    int num_rows = 0;
-    int num_cols = 0;
-    int num_row_labels = 0;
-    int num_col_labels = 0;
-    int max_iter = 25;
+    int num_rows=0;
+    int num_cols=0;
+    int num_row_labels=0;
+    int num_col_labels=0;
+    int max_iter=25;
 
-    if (!parse_arguments(
-            argc, argv,
-            &num_rows, &num_cols,
-            &num_row_labels, &num_col_labels,
-            &matrix, &row_labels, &col_labels,
-            &output_file, &max_iter))
+    if(!parse_arguments(
+        argc,argv,
+        &num_rows,&num_cols,
+        &num_row_labels,&num_col_labels,
+        &matrix,&row_labels,&col_labels,
+        &output_file,&max_iter))
     {
         MPI_Finalize();
         return EXIT_FAILURE;
     }
 
     cluster_mpi(
-        num_rows, num_cols,
-        num_row_labels, num_col_labels,
+        num_rows,num_cols,
+        num_row_labels,num_col_labels,
         matrix.data(),
         row_labels.data(),
         col_labels.data(),
         max_iter,
-        rank, size);
+        rank,size);
 
-    if (rank == 0) {
-        write_labels(
-            output_file,
-            num_rows,
-            num_cols,
-            row_labels.data(),
-            col_labels.data());
-    }
+    if(rank==0)
+        write_labels(output_file,
+                     num_rows,num_cols,
+                     row_labels.data(),
+                     col_labels.data());
 
     MPI_Finalize();
-    return EXIT_SUCCESS;
 }

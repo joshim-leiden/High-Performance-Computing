@@ -1,0 +1,258 @@
+#include <chrono>
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <mpi.h>
+#include <cuda_runtime.h>
+#include "common.h"
+
+
+// CUDA error-checking: wraping CUDA calls and reporting runtime errors with file and line info
+
+#define cudaCheck(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
+   if (code != cudaSuccess) {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
+// cuda kernels
+// computing local cluster sum ands counting
+
+__global__ void calculate_local_sums_kernel(
+    int num_rows, int local_cols, int num_col_labels,
+    const float* matrix, const int* row_labels, const int* col_labels,
+    double* sums, int* counts) 
+{
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= local_cols) return;
+
+    for (int i = 0; i < num_rows; i++) {
+        int r_lbl = row_labels[i];
+        int c_lbl = col_labels[j];
+        int idx = r_lbl * num_col_labels + c_lbl;
+        atomicAdd(&sums[idx], (double)matrix[j * num_rows + i]);
+        atomicAdd(&counts[idx], 1);
+    }
+}
+
+
+// Computing distance of each row to all row clusters using current column labels and cluster averages
+
+__global__ void compute_row_dist_kernel(
+    int num_rows, int local_cols, int num_row_labels, int num_col_labels,
+    const float* matrix, const int* col_labels, const double* cluster_avg,
+    double* row_dist) 
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= num_rows) return;
+
+    for (int k = 0; k < num_row_labels; k++) {
+        double d = 0.0;
+        for (int j = 0; j < local_cols; j++) {
+            int c_lbl = col_labels[j];
+            double avg = cluster_avg[k * num_col_labels + c_lbl];
+            double diff = avg - (double)matrix[j * num_rows + i];
+            d += diff * diff;
+        }
+        row_dist[i * num_row_labels + k] = d;
+    }
+}
+
+
+// // updating column labels by assigning each column to the closest cluster based on row labels and cluster averages
+
+__global__ void update_col_kernel(
+    int num_rows, int local_cols, int num_col_labels,
+    const float* matrix, const int* row_labels, int* col_labels,
+    const double* cluster_avg, int* d_changes) 
+{
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= local_cols) return;
+
+    int best_label = -1;
+    double best_dist = INFINITY;
+
+    for (int k = 0; k < num_col_labels; k++) {
+        double dist = 0.0;
+        for (int i = 0; i < num_rows; i++) {
+            float val = matrix[j * num_rows + i];
+            int r_lbl = row_labels[i];
+            double avg = cluster_avg[r_lbl * num_col_labels + k];
+            double diff = avg - (double)val;
+            dist += diff * diff;
+        }
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_label = k;
+        }
+    }
+
+    if (col_labels[j] != best_label) {
+        col_labels[j] = best_label;
+        atomicAdd(d_changes, 1);
+    }
+}
+
+// main
+
+int main(int argc, const char* argv[]) {
+    MPI_Init(&argc, const_cast<char***>(&argv));
+    
+    // initialize MPI and distributing input data across ranks
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    std::vector<float> matrix;
+    std::vector<label_type> row_labels, col_labels;
+    std::string output_file;
+    int num_rows, num_cols, num_row_labels, num_col_labels, max_iter;
+
+    if (rank == 0) {
+        parse_arguments(argc, argv, &num_rows, &num_cols, &num_row_labels, &num_col_labels, 
+                        &matrix, &row_labels, &col_labels, &output_file, &max_iter);
+    }
+
+    MPI_Bcast(&num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&num_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&num_row_labels, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&num_col_labels, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&max_iter, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (rank != 0) row_labels.resize(num_rows);
+    MPI_Bcast(row_labels.data(), num_rows, MPI_INT, 0, MPI_COMM_WORLD);
+
+
+    // partitioning columns across MPI ranks and scattering initial column labels
+
+    std::vector<int> counts(size), displs(size);
+    int base = num_cols / size, rem = num_cols % size, offset = 0;
+    for (int r = 0; r < size; r++) {
+        counts[r] = base + (r < rem ? 1 : 0);
+        displs[r] = offset;
+        offset += counts[r];
+    }
+
+    int local_cols = counts[rank];
+    std::vector<label_type> local_col_labels(local_cols);
+    MPI_Scatterv(rank == 0 ? col_labels.data() : nullptr, counts.data(), displs.data(), MPI_INT,
+                 local_col_labels.data(), local_cols, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // converting matrix to column-major layout and distributing for gpu access
+
+    std::vector<float> local_matrix(num_rows * local_cols);
+    if (rank == 0) {
+        std::vector<float> tmp(num_rows * num_cols);
+        for (int j = 0; j < num_cols; j++)
+            for (int i = 0; i < num_rows; i++)
+                tmp[j * num_rows + i] = matrix[i * num_cols + j];
+        
+        std::vector<int> sc(size), sd(size);
+        for(int r=0; r<size; r++) { sc[r] = counts[r]*num_rows; sd[r] = displs[r]*num_rows; }
+        MPI_Scatterv(tmp.data(), sc.data(), sd.data(), MPI_FLOAT, local_matrix.data(), num_rows*local_cols, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_Scatterv(nullptr, nullptr, nullptr, MPI_FLOAT, local_matrix.data(), num_rows*local_cols, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    }
+
+    // allocating gpu memory and copying initial data to device
+
+    float *d_matrix;
+    int *d_row_labels, *d_col_labels, *d_changes, *d_counts;
+    double *d_cluster_avg, *d_sums, *d_row_dist;
+
+    cudaCheck(cudaMalloc(&d_matrix, num_rows * local_cols * sizeof(float)));
+    cudaCheck(cudaMalloc(&d_row_labels, num_rows * sizeof(int)));
+    cudaCheck(cudaMalloc(&d_col_labels, local_cols * sizeof(int)));
+    cudaCheck(cudaMalloc(&d_cluster_avg, num_row_labels * num_col_labels * sizeof(double)));
+    cudaCheck(cudaMalloc(&d_sums, num_row_labels * num_col_labels * sizeof(double)));
+    cudaCheck(cudaMalloc(&d_counts, num_row_labels * num_col_labels * sizeof(int)));
+    cudaCheck(cudaMalloc(&d_row_dist, num_rows * num_row_labels * sizeof(double)));
+    cudaCheck(cudaMalloc(&d_changes, sizeof(int)));
+
+    cudaCheck(cudaMemcpy(d_matrix, local_matrix.data(), num_rows * local_cols * sizeof(float), cudaMemcpyHostToDevice));
+    cudaCheck(cudaMemcpy(d_col_labels, local_col_labels.data(), local_cols * sizeof(int), cudaMemcpyHostToDevice));
+
+
+    // // co-clustering iteratively until convergence or max iteration
+
+    for (int iter = 0; iter < max_iter; iter++) {
+        
+        // computing cluster averages
+
+        cudaCheck(cudaMemset(d_sums, 0, num_row_labels * num_col_labels * sizeof(double)));
+        cudaCheck(cudaMemset(d_counts, 0, num_row_labels * num_col_labels * sizeof(int)));
+        cudaCheck(cudaMemcpy(d_row_labels, row_labels.data(), num_rows * sizeof(int), cudaMemcpyHostToDevice));
+        
+        calculate_local_sums_kernel<<<(local_cols+255)/256, 256>>>(num_rows, local_cols, num_col_labels, d_matrix, d_row_labels, d_col_labels, d_sums, d_counts);
+        
+        std::vector<double> h_sums(num_row_labels * num_col_labels);
+        std::vector<int> h_counts(num_row_labels * num_col_labels);
+        cudaCheck(cudaMemcpy(h_sums.data(), d_sums, h_sums.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        cudaCheck(cudaMemcpy(h_counts.data(), d_counts, h_counts.size() * sizeof(int), cudaMemcpyDeviceToHost));
+
+        MPI_Allreduce(MPI_IN_PLACE, h_sums.data(), h_sums.size(), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, h_counts.data(), h_counts.size(), MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+        for (size_t i = 0; i < h_sums.size(); i++) h_sums[i] = (h_counts[i] > 0) ? (h_sums[i] / h_counts[i]) : 0.0;
+        cudaCheck(cudaMemcpy(d_cluster_avg, h_sums.data(), h_sums.size() * sizeof(double), cudaMemcpyHostToDevice));
+
+
+        // row update
+        // updating row labels based on distances computed on GPU and reducing across MPI ranks
+
+        compute_row_dist_kernel<<<(num_rows+255)/256, 256>>>(num_rows, local_cols, num_row_labels, num_col_labels, d_matrix, d_col_labels, d_cluster_avg, d_row_dist);
+        
+        std::vector<double> row_dist(num_rows * num_row_labels);
+        cudaCheck(cudaMemcpy(row_dist.data(), d_row_dist, row_dist.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        MPI_Allreduce(MPI_IN_PLACE, row_dist.data(), row_dist.size(), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        int row_updates = 0;
+        if (rank == 0) {
+            for (int i = 0; i < num_rows; i++) {
+                int best = -1; double b_val = INFINITY;
+                for (int k = 0; k < num_row_labels; k++) {
+                    double d = row_dist[i * num_row_labels + k];
+                    if (d < b_val) { b_val = d; best = k; }
+                }
+                if (row_labels[i] != best) { row_labels[i] = best; row_updates++; }
+            }
+        }
+        MPI_Bcast(row_labels.data(), num_rows, MPI_INT, 0, MPI_COMM_WORLD);
+
+
+
+        // column update
+        // updating column labels in parallel on GPU and counting label changes 
+
+        cudaCheck(cudaMemset(d_changes, 0, sizeof(int)));
+        update_col_kernel<<<(local_cols+255)/256, 256>>>(num_rows, local_cols, num_col_labels, d_matrix, d_row_labels, d_col_labels, d_cluster_avg, d_changes);
+        
+        int col_upd_local, col_upd_global, total_upd;
+        cudaCheck(cudaMemcpy(&col_upd_local, d_changes, sizeof(int), cudaMemcpyDeviceToHost));
+        MPI_Allreduce(&row_updates, &total_upd, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&col_upd_local, &col_upd_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        
+        if ((total_upd + col_upd_global) == 0) break;
+    }
+
+    cudaCheck(cudaMemcpy(local_col_labels.data(), d_col_labels, local_cols * sizeof(int), cudaMemcpyDeviceToHost));
+    if (rank == 0) col_labels.resize(num_cols);
+
+    
+    // gathering final column labels from all ranks to root process
+
+    MPI_Gatherv(local_col_labels.data(), local_cols, MPI_INT, rank == 0 ? col_labels.data() : nullptr, counts.data(), displs.data(), MPI_INT, 0, MPI_COMM_WORLD);
+
+    
+    // writing final clustering labels to output file
+
+    if (rank == 0) write_labels(output_file, num_rows, num_cols, row_labels.data(), col_labels.data());
+
+    cudaFree(d_matrix); cudaFree(d_row_labels); cudaFree(d_col_labels); cudaFree(d_cluster_avg); 
+    cudaFree(d_sums); cudaFree(d_counts); cudaFree(d_row_dist); cudaFree(d_changes);
+    MPI_Finalize();
+    return 0;
+}

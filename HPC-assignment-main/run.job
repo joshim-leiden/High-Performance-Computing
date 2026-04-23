@@ -1,27 +1,37 @@
 #!/bin/bash
+#SBATCH --job-name=cgc_cuda
+#SBATCH --output=job_%j.out
+#SBATCH --error=job_%j.err
+#SBATCH --nodes=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=defq
+#SBATCH --gres=gpu:1
+#SBATCH --time=00:30:00
 
-#SBATCH --job-name=hpc          # Job name
-#SBATCH --output=job_%j.out     # Output file (%j = SLURM job ID)
-#SBATCH --error=job_%j.err      # Error file
-#SBATCH --nodes=2            # Number of nodes (modifiy for MPI)
-#SBATCH --ntasks-per-node=1     # Number of tasks per node
-#SBATCH --cpus-per-task=1       # Number of threads per task (modify for multithreading)
-#SBATCH --gres=gpu:A4000-Ada:1  # Number of GPUs per node
-#SBATCH --time=00:15:00         # Time limit (HH:MM:SS). Do not exceed 15 minutes!
-#SBATCH --nice=100              # Job priority (allow higher priority jobs first)
-
-# Set PROG to the name of your implementation's binary (e.g., cgc_mpi)
-PROG=cgc_mpi
-DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
-LABELS=3*20
-OUT=labels_${SLURM_JOB_ID}.txt
-
-# Load required modules
+# Load modules
+module purge
+module load gnu12/12.4.0
 module load openmpi4/4.1.6
-module load cuda12.6/toolkit/12.6
+module load cuda12.1/toolkit/12.1
 
-# Set environment variables if needed (e.g., OMP_NUM_THREADS when using OpenMP)
-#export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+which mpirun
 
-# Run the binary with arguments
-mpirun ./${PROG} ${DATA} ${LABELS} -o ${OUT}
+
+PROG=cgc_cuda
+
+#DATA=/var/scratch/bwn200/HPC_data/spring_data_s.npy
+#LABELS=/var/scratch/bwn200/HPC_data/spring_labels_s_3x20.txt
+
+DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
+LABELS=/var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt
+
+
+#DATA=/var/scratch/bwn200/HPC_data/spring_data_l.npy
+#LABELS=/var/scratch/bwn200/HPC_data/spring_labels_l_5x100.txt
+
+
+# Run mpirun
+#mpirun ./${PROG} ${DATA} ${LABELS} -o ${OUT}
+
+/usr/bin/time -p mpirun ./cgc_cuda $DATA $LABELS -o labels_m.txt

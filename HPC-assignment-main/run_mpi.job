@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --job-name=cgc_mpi_scaling
+#SBATCH --output=mpi_%j.out
+#SBATCH --error=mpi_%j.err
+#SBATCH --nodes=1               
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16      
+#SBATCH --partition=defq
+#SBATCH --time=00:30:00
+
+# Load modules 
+module purge
+module load gnu12/12.4.0
+module load openmpi4/4.1.6
+
+
+mpirun ./cgc_mpi \
+/var/scratch/bwn200/HPC_data/spring_data_l.npy \
+/var/scratch/bwn200/HPC_data/spring_labels_l_5x100.txt \
+-o labels_mpi.txt

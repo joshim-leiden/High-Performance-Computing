@@ -8,10 +8,10 @@ MPICC=mpic++
 NVCC=nvcc
 # Append additional make targets to BINS for subsequent deadlines \
 (e.g., cgc_cuda for deadline 2 and cgc_bonus_{PLACEHOLDER} for deadline 3).
-BINS=cgc_serial cgc_mpi
+BINS=cgc_serial cgc_mpi cgc_cuda
 # Feel free to add additional optimization flags to CFLAGS and CUFLAGS.
 CFLAGS=-std=c++17 -O3 -march=native -Wall -Wextra -Wnarrowing -Wparentheses -Werror -Wno-unused-parameter -Wno-cast-function-type
-CUFLAGS=-arch=sm_89
+CUFLAGS=-arch=sm_80
 
 all: $(BINS) Makefile
 
@@ -23,8 +23,10 @@ cgc_mpi: $(SRC)/cgc_mpi.cpp $(SRC)/common.h
 	$(MPICC) -o $@ $(SRC)/cgc_mpi.cpp $(CFLAGS) $(INCLUDES)
 
 # Deadline 2
+
 cgc_cuda: $(SRC)/cgc_cuda.cu $(SRC)/common.h
-	$(NVCC) -o $@ $(SRC)/cgc_cuda.cu $(CFLAGS) -x=cu -ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
+	$(NVCC) -O3 $(SRC)/cgc_cuda.cu -o cgc_cuda -ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
+
 
 # Deadline 3
 # cgc_bonus_{PLACEHOLDER}: $(SRC)/cgc_bonus_{PLACEHOLDER}.cu $(SRC)/common.h

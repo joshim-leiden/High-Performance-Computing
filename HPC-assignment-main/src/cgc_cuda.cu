@@ -77,10 +77,13 @@ __global__ void update_col_kernel(
     for (int k = 0; k < num_col_labels; k++) {
         double dist = 0.0;
         for (int i = 0; i < num_rows; i++) {
-            float val = matrix[j * num_rows + i];
+            float item = matrix[j * num_rows + i];
             int r_lbl = row_labels[i];
-            double avg = cluster_avg[r_lbl * num_col_labels + k];
-            double diff = avg - (double)val;
+
+           int avg_idx = r_lbl * num_col_labels + k;
+            double y = cluster_avg[avg_idx];
+            
+            double diff = y - (double)item;
             dist += diff * diff;
         }
         if (dist < best_dist) {
@@ -176,9 +179,13 @@ int main(int argc, const char* argv[]) {
     cudaCheck(cudaMemcpy(d_col_labels, local_col_labels.data(), local_cols * sizeof(int), cudaMemcpyHostToDevice));
 
 
-    // // co-clustering iteratively until convergence or max iteration
+    // co-clustering iteratively until convergence
 
-    for (int iter = 0; iter < max_iter; iter++) {
+    // timing starts
+    auto before = std::chrono::high_resolution_clock::now();
+    
+    int iter;
+    for ( iter = 0; iter < max_iter; iter++) {
         
         // computing cluster averages
 
@@ -221,6 +228,7 @@ int main(int argc, const char* argv[]) {
             }
         }
         MPI_Bcast(row_labels.data(), num_rows, MPI_INT, 0, MPI_COMM_WORLD);
+        cudaCheck(cudaMemcpy(d_row_labels, row_labels.data(), num_rows * sizeof(int), cudaMemcpyHostToDevice));
 
 
 
@@ -232,27 +240,51 @@ int main(int argc, const char* argv[]) {
         
         int col_upd_local, col_upd_global, total_upd;
         cudaCheck(cudaMemcpy(&col_upd_local, d_changes, sizeof(int), cudaMemcpyDeviceToHost));
+        cudaCheck(cudaMemcpy(local_col_labels.data(), d_col_labels, local_cols * sizeof(int), cudaMemcpyDeviceToHost));
         MPI_Allreduce(&row_updates, &total_upd, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&col_upd_local, &col_upd_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         
         if ((total_upd + col_upd_global) == 0) break;
     }
 
-    cudaCheck(cudaMemcpy(local_col_labels.data(), d_col_labels, local_cols * sizeof(int), cudaMemcpyDeviceToHost));
+   // timing ends
+    auto after = std::chrono::high_resolution_clock::now();
+    double time_seconds = std::chrono::duration<double>(after - before).count();
+
+    if (rank == 0) {
+    std::cout << "clustering time total: " << time_seconds << " seconds\n";
+    std::cout << "clustering time per iteration: "
+              << (time_seconds / iter) << " seconds\n";
+    }
+
+    // copying results back 
+    cudaCheck(cudaMemcpy(local_col_labels.data(), d_col_labels,
+                     local_cols * sizeof(int), cudaMemcpyDeviceToHost));
+
     if (rank == 0) col_labels.resize(num_cols);
 
-    
-    // gathering final column labels from all ranks to root process
+   
+    MPI_Gatherv(local_col_labels.data(), local_cols, MPI_INT,
+            rank == 0 ? col_labels.data() : nullptr,
+            counts.data(), displs.data(),
+            MPI_INT, 0, MPI_COMM_WORLD);
 
-    MPI_Gatherv(local_col_labels.data(), local_cols, MPI_INT, rank == 0 ? col_labels.data() : nullptr, counts.data(), displs.data(), MPI_INT, 0, MPI_COMM_WORLD);
+    // writing output 
+    if (rank == 0) {
+    write_labels(output_file, num_rows, num_cols,
+                 row_labels.data(), col_labels.data());
+    }
 
-    
-    // writing final clustering labels to output file
+    // freeing memory
+    cudaFree(d_matrix);
+    cudaFree(d_row_labels);
+    cudaFree(d_col_labels);
+    cudaFree(d_cluster_avg);
+    cudaFree(d_sums);
+    cudaFree(d_counts);
+    cudaFree(d_row_dist);
+    cudaFree(d_changes);
 
-    if (rank == 0) write_labels(output_file, num_rows, num_cols, row_labels.data(), col_labels.data());
-
-    cudaFree(d_matrix); cudaFree(d_row_labels); cudaFree(d_col_labels); cudaFree(d_cluster_avg); 
-    cudaFree(d_sums); cudaFree(d_counts); cudaFree(d_row_dist); cudaFree(d_changes);
     MPI_Finalize();
     return 0;
 }

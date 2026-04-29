@@ -28,7 +28,7 @@ static void get_col_partition(
 }
 
 
-// computes avg value for each row-label and column-label cluster
+// computing avg value for each row-label and column-label cluster
 
 std::vector<double> calculate_cluster_average(
     int num_rows,
@@ -66,7 +66,7 @@ std::vector<double> calculate_cluster_average(
     return cluster_avg;
 }
 
-// computes sq distance betn cluster avg and matrix value
+// computing sq distance betn cluster avg and matrix value
 
 double calculate_distance(double avg, double item) {
     double diff = (avg - item);
@@ -74,7 +74,7 @@ double calculate_distance(double avg, double item) {
 }
 
 
-// updates row labels on rank 0 by selecting the best cluster
+// updating row labels on rank 0 by selecting the best cluster
 
 std::pair<int, double> update_row_labels(
     int num_rows,
@@ -123,7 +123,7 @@ std::pair<int, double> update_row_labels(
 }
 
 
- // updates column labels locally on each MPI rank   
+ // updating column labels locally on each MPI rank   
 
 std::pair<int, double> update_col_labels_local(
     int num_rows,
@@ -170,7 +170,7 @@ std::pair<int, double> update_col_labels_local(
     return {num_updated, total_dist};
 }
 
-// performs iterative MPI co-clustering until convergence
+// performing iterative MPI co-clustering until convergence
 
 void cluster_mpi(
     int num_rows,
@@ -189,7 +189,7 @@ void cluster_mpi(
     MPI_Comm_rank(comm, &world_rank);
     MPI_Comm_size(comm, &world_size);
 
-    // compute column partitioning for each rank
+    // computing column partitioning for each rank
 
     std::vector<int> col_counts, col_displs;
     get_col_partition(num_cols, world_size, col_counts, col_displs);
@@ -229,7 +229,7 @@ void cluster_mpi(
             total_dist_row = result.second;
         }
 
-        // broadcasts updated row labels and cluster averages
+        // broadcasting updated row labels and cluster averages
 
         MPI_Bcast(row_labels, num_rows, MPI_INT, 0, comm);
         MPI_Bcast(
@@ -239,7 +239,7 @@ void cluster_mpi(
             0,
             comm);
 
-        // updates column labels in parallel on each rank
+        // updateing column labels in parallel on each rank
 
         auto [num_cols_updated_local, total_dist_col_local] = update_col_labels_local(
             num_rows,
@@ -275,7 +275,7 @@ void cluster_mpi(
             0,
             comm);
 
-        // gather updated column labels back to rank 0
+        // gathering updated column labels back to rank 0
 
         MPI_Gatherv(
             local_col_labels,
@@ -296,7 +296,7 @@ void cluster_mpi(
             total_dist = total_dist_row + total_dist_col;
         }
 
-         // broadcast convergence information
+         // broadcasting convergence information
 
         MPI_Bcast(&num_updated, 1, MPI_INT, 0, comm);
 
@@ -309,7 +309,7 @@ void cluster_mpi(
                       << "\n";
         }
 
-         // stop if labels stop changing
+         // stops if labels stop changing
         if (num_updated == 0) {
             break;
         }
@@ -344,7 +344,7 @@ int main(int argc, const char* argv[]) {
 
     int parse_ok = 1;
 
-    // parses argument only on rank 0
+    // parseing argument only on rank 0
     if (world_rank == 0) {
         if (!parse_arguments(
                 argc,
@@ -368,7 +368,7 @@ int main(int argc, const char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // broadcasts scalar metadata
+    // broadcasting scalar metadata
     MPI_Bcast(&num_rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_row_labels, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -452,7 +452,7 @@ int main(int argc, const char* argv[]) {
         max_iter,
         MPI_COMM_WORLD);
 
-    // write resulting labels
+    // writing resulting labels
     if (world_rank == 0) {
         write_labels(
             output_file,

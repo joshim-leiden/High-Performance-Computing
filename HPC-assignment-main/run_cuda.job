@@ -2,12 +2,12 @@
 #SBATCH --job-name=cgc_cuda
 #SBATCH --output=job_%j.out
 #SBATCH --error=job_%j.err
-#SBATCH --nodes=4
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --partition=defq
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 
 # Load modules
 module purge
@@ -15,23 +15,28 @@ module load gnu12/12.4.0
 module load openmpi4/4.1.6
 module load cuda12.1/toolkit/12.1
 
-which mpirun
+#which mpirun
 
 
-PROG=cgc_cuda
+#PROG=cgc_cuda
 
+# small
 #DATA=/var/scratch/bwn200/HPC_data/spring_data_s.npy
-#LABELS=/var/scratch/bwn200/HPC_data/spring_labels_s_3x20.txt
+#LABELS=/var/scratch/bwn200/HPC_data/spring_labels_s_5x100.txt
 
-DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
-LABELS=/var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt
+# medium
+#DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
+#LABELS=/var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt
 
-
+# large
 #DATA=/var/scratch/bwn200/HPC_data/spring_data_l.npy
 #LABELS=/var/scratch/bwn200/HPC_data/spring_labels_l_5x100.txt
 
+# xxl
+DATA=/var/scratch/bwn200/HPC_data/spring_data_xxl.npy
+LABELS=/var/scratch/bwn200/HPC_data/spring_labels_xxl_3x20.txt
 
 # Run mpirun
 #mpirun ./${PROG} ${DATA} ${LABELS} -o ${OUT}
 
-/usr/bin/time -p mpirun ./cgc_cuda $DATA $LABELS -o labels_m.txt
+/usr/bin/time -p mpirun -np 8 ./cgc_cuda $DATA $LABELS -o cuda_xxl_8.txt -m 20

@@ -19,3 +19,4 @@ module load openmpi4/4.1.6
     /var/scratch/bwn200/HPC_data/spring_labels_xl_5x100.txt \
     -o labels_mpi_xl_8.txt \
     -m 50
+    

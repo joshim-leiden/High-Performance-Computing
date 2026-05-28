@@ -8,10 +8,11 @@ MPICC=mpic++
 NVCC=nvcc
 # Append additional make targets to BINS for subsequent deadlines \
 (e.g., cgc_cuda for deadline 2 and cgc_bonus_{PLACEHOLDER} for deadline 3).
-BINS=cgc_serial cgc_mpi cgc_cuda
+BINS=cgc_serial cgc_mpi cgc_cuda cgc_cuda_bonus
 # Feel free to add additional optimization flags to CFLAGS and CUFLAGS.
 CFLAGS=-std=c++17 -O3 -march=native -Wall -Wextra -Wnarrowing -Wparentheses -Werror -Wno-unused-parameter -Wno-cast-function-type
 CUFLAGS=-arch=sm_80
+BLOCK_SIZE?=256
 
 all: $(BINS) Makefile
 
@@ -28,9 +29,12 @@ cgc_cuda: $(SRC)/cgc_cuda.cu $(SRC)/common.h
 	$(NVCC) -O3 $(SRC)/cgc_cuda.cu -o cgc_cuda -ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
 
 
-# Deadline 3
-# cgc_bonus_{PLACEHOLDER}: $(SRC)/cgc_bonus_{PLACEHOLDER}.cu $(SRC)/common.h
-# 	$(NVCC) -o $@ $(SRC)/cgc_bonus_{PLACEHOLDER}.cu $(CFLAGS) -x=cu -ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
+# Deadline 3 
+
+cgc_cuda_bonus: $(SRC)/cgc_cuda_bonus.cu $(SRC)/common.h
+	$(NVCC) -O3 -DBLOCK_SIZE=$(BLOCK_SIZE) \
+	$(SRC)/cgc_cuda_bonus.cu -o cgc_cuda_bonus \
+	-ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
 
 submit:
 	tar -czf submission.tar.gz src/ Makefile *.job *.pdf

@@ -5,10 +5,9 @@
 
 #SBATCH --partition=defq
 
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
-
 
 #SBATCH --time=01:00:00
 
@@ -22,8 +21,8 @@ export CUDA_VISIBLE_DEVICES=0
 DATA=/var/scratch/bwn200/HPC_data/spring_data_xxl.npy
 LABELS=/var/scratch/bwn200/HPC_data/spring_labels_xxl_5x100.txt
 
-/usr/bin/time -p mpirun -np 8 ./cgc_cuda \
+/usr/bin/time -p mpirun -np 1 ./cgc_cuda \
     $DATA \
     $LABELS \
-    -o cuda_xxl_8.txt \
+    -o cuda_xxl.txt \
     -m 100

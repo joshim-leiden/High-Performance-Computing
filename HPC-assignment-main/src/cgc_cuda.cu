@@ -311,6 +311,7 @@ int main(int argc, const char* argv[]) {
     double* d_sums = nullptr;
     double* d_total_dist = nullptr;
     double* d_row_dist = nullptr;
+    
 
     cudaCheck(cudaMalloc(&d_matrix, num_rows * local_cols * sizeof(float)));
     cudaCheck(cudaMalloc(&d_row_labels, num_rows * sizeof(int)));

@@ -1,0 +1,10 @@
+arguments:
+ * matrix /var/scratch/bwn200/HPC_data/spring_data_m.npy: 40 x 124849
+ * row labels: 5
+ * column labels: 100
+ * output: labels_mpi_m_8.txt
+ * max. iterations: 100
+writing result to labels_mpi_m_8.txt
+real 12.24
+user 9.61
+sys 0.47

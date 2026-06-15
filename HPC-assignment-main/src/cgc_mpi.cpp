@@ -3,6 +3,7 @@
 #include <vector>
 #include <cmath>
 #include <mpi.h>
+#include <omp.h>
 #include "common.h"
 
 
@@ -88,6 +89,7 @@ std::pair<int, double> update_row_labels(
     int num_updated = 0;
     double total_dist = 0;
 
+  //  #pragma omp parallel for reduction(+:num_updated,total_dist) schedule(static)
     for (int i = 0; i < num_rows; i++) {
         int best_label = -1;
         double best_dist = INFINITY;
@@ -136,6 +138,7 @@ std::pair<int, double> update_col_labels_local(
     int num_updated = 0;
     double total_dist = 0;
 
+#pragma omp parallel for reduction(+:num_updated,total_dist) schedule(static)
     for (int j = 0; j < local_num_cols; j++) {
         int best_label = -1;
         double best_dist = INFINITY;

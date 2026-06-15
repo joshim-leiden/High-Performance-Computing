@@ -1,0 +1,10 @@
+arguments:
+ * matrix /var/scratch/bwn200/HPC_data/spring_data_xl.npy: 40 x 10110932
+ * row labels: 5
+ * column labels: 100
+ * output: labels_mpi_xl_8.txt
+ * max. iterations: 50
+writing result to labels_mpi_xl_8.txt
+real 182.86
+user 544.82
+sys 1.90

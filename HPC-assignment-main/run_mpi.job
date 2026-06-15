@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=cgc_mpi_scaling
+#SBATCH --job-name=cgc_mpi_medium
 #SBATCH --output=mpi_%j.out
 #SBATCH --error=mpi_%j.err
 #SBATCH --nodes=8
@@ -8,15 +8,14 @@
 #SBATCH --partition=defq
 #SBATCH --time=00:30:00
 
-# Load modules 
 module purge
 module load gnu12/12.4.0
 module load openmpi4/4.1.6
 
+export OMP_NUM_THREADS=16
 
 /usr/bin/time -p mpirun -np 8 ./cgc_mpi \
-    /var/scratch/bwn200/HPC_data/spring_data_xl.npy \
-    /var/scratch/bwn200/HPC_data/spring_labels_xl_5x100.txt \
-    -o labels_mpi_xl_8.txt \
-    -m 50
-    
+    /var/scratch/bwn200/HPC_data/spring_data_m.npy \
+    /var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt \
+    -o labels_mpi_m_8.txt \
+    -m 100

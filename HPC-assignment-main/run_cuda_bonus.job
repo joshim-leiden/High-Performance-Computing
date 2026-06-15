@@ -5,10 +5,9 @@
 
 #SBATCH --partition=defq
 
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-
+#SBATCH --cpus-per-task=16
 
 #SBATCH --time=01:00:00
 
@@ -18,12 +17,13 @@ module load openmpi4/4.1.6
 module load cuda12.1/toolkit/12.1
 
 export CUDA_VISIBLE_DEVICES=0
+export OMP_NUM_THREADS=16
 
 DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
 LABELS=/var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt
 
-/usr/bin/time -p mpirun -np 8 ./cgc_cuda_bonus \
+/usr/bin/time -p mpirun -np 1 ./cgc_cuda_bonus \
     $DATA \
     $LABELS \
-    -o cuda_bonus_m_8.txt \
+    -o cuda_bonus_m.txt \
     -m 100

@@ -10,7 +10,7 @@ NVCC=nvcc
 (e.g., cgc_cuda for deadline 2 and cgc_bonus_{PLACEHOLDER} for deadline 3).
 BINS=cgc_serial cgc_mpi cgc_cuda cgc_cuda_bonus
 # Feel free to add additional optimization flags to CFLAGS and CUFLAGS.
-CFLAGS=-std=c++17 -O3 -march=native -Wall -Wextra -Wnarrowing -Wparentheses -Werror -Wno-unused-parameter -Wno-cast-function-type
+CFLAGS=-std=c++17 -O3 -march=native -fopenmp -Wall -Wextra -Wnarrowing -Wparentheses -Werror -Wno-unused-parameter -Wno-cast-function-type
 CUFLAGS=-arch=sm_80
 BLOCK_SIZE?=256
 
@@ -33,6 +33,7 @@ cgc_cuda: $(SRC)/cgc_cuda.cu $(SRC)/common.h
 
 cgc_cuda_bonus: $(SRC)/cgc_cuda_bonus.cu $(SRC)/common.h
 	$(NVCC) -O3 -DBLOCK_SIZE=$(BLOCK_SIZE) \
+	-Xcompiler -fopenmp \
 	$(SRC)/cgc_cuda_bonus.cu -o cgc_cuda_bonus \
 	-ccbin=mpic++ $(CUFLAGS) $(INCLUDES)
 

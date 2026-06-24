@@ -95,6 +95,60 @@ void compute_row_dist_parallel_kernel(
 
 
 __global__
+void compute_row_dist_parallel_smem_kernel(
+    int num_rows,
+    int local_cols,
+    int num_row_labels,
+    int num_col_labels,
+    const float* matrix,
+    const int* col_labels,
+    const double* cluster_avg,
+    double* row_dist)
+{
+    extern __shared__ double s_avg[];
+
+    int j =
+        blockIdx.x * blockDim.x +
+        threadIdx.x;
+
+    if(j >= local_cols)
+        return;
+
+    int c_lbl =
+        col_labels[j];
+
+    // Load cluster averages for this column label
+    for(int k = threadIdx.x;
+        k < num_row_labels;
+        k += blockDim.x)
+    {
+        s_avg[k] =
+            cluster_avg[
+                k*num_col_labels +
+                c_lbl];
+    }
+
+    __syncthreads();
+
+    for(int row=0; row<num_rows; row++)
+    {
+        double value =
+            matrix[j*num_rows + row];
+
+        for(int k=0; k<num_row_labels; k++)
+        {
+            double diff =
+                s_avg[k] - value;
+
+            atomicAdd(
+                &row_dist[
+                    row*num_row_labels + k],
+                diff*diff);
+        }
+    }
+}
+
+__global__
 void update_row_labels_kernel(
     int num_rows,
     int num_row_labels,
@@ -137,47 +191,241 @@ void update_row_labels_kernel(
 
 
 __global__
+void update_row_labels_kernel_warp(
+    int num_rows,
+    int num_row_labels,
+    const double* row_dist,
+    int* row_labels,
+    int* changes)
+{
+    int warp_id =
+        (blockIdx.x * blockDim.x +
+         threadIdx.x) / 32;
+
+    int lane =
+        threadIdx.x & 31;
+
+    if (warp_id >= num_rows)
+        return;
+
+    double best_val = INFINITY;
+    int best_label = 0;
+
+    for(int k = lane;
+        k < num_row_labels;
+        k += 32)
+    {
+        double d =
+            row_dist[
+                warp_id*num_row_labels + k];
+
+        if(d < best_val)
+        {
+            best_val = d;
+            best_label = k;
+        }
+    }
+
+    for(int offset = 16;
+        offset > 0;
+        offset >>= 1)
+    {
+        double other_val =
+            __shfl_down_sync(
+                0xffffffff,
+                best_val,
+                offset);
+
+        int other_label =
+            __shfl_down_sync(
+                0xffffffff,
+                best_label,
+                offset);
+
+        if(other_val < best_val)
+        {
+            best_val = other_val;
+            best_label = other_label;
+        }
+    }
+
+    if(lane == 0)
+    {
+        int old =
+            row_labels[warp_id];
+
+        if(old != best_label)
+        {
+            row_labels[warp_id] =
+                best_label;
+
+            atomicAdd(
+                changes,
+                1);
+        }
+    }
+}
+
+
+__global__
 void update_col_kernel(
     int num_rows,
     int local_cols,
     int num_col_labels,
-    const float* matrix,
-    const int* row_labels,
-    int* col_labels,
-    const double* cluster_avg,
+    const float* __restrict__ matrix,
+    const int* __restrict__ row_labels,
+    int* __restrict__ col_labels,
+    const double* __restrict__ cluster_avg,
     int* d_changes,
     double* d_total_dist)
 {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j >= local_cols) return;
+    int j =
+        blockIdx.x * blockDim.x +
+        threadIdx.x;
+
+    if (j >= local_cols)
+        return;
 
     int best_label = -1;
     double best_dist = INFINITY;
 
-    for (int k = 0; k < num_col_labels; k++) {
+    // Cache column values
+    double col_vals[64];
+
+    #pragma unroll
+    for (int i = 0; i < num_rows; i++)
+    {
+        col_vals[i] =
+            (double)matrix[
+                j * num_rows + i];
+    }
+
+    // Cache row labels
+    int row_lbl_cache[64];
+
+    #pragma unroll
+    for (int i = 0; i < num_rows; i++)
+    {
+        row_lbl_cache[i] =
+            row_labels[i];
+    }
+
+    for (int k = 0; k < num_col_labels; k++)
+    {
         double dist = 0.0;
 
-        for (int i = 0; i < num_rows; i++) {
-            float item = matrix[j * num_rows + i];
-            int r_lbl = row_labels[i];
-            double avg = cluster_avg[r_lbl * num_col_labels + k];
-            double diff = avg - (double)item;
+        #pragma unroll 8
+        for (int i = 0; i < num_rows; i++)
+        {
+            double item =
+                col_vals[i];
+
+            int r_lbl =
+                row_lbl_cache[i];
+
+            double avg =
+                cluster_avg[
+                    r_lbl * num_col_labels + k];
+
+            double diff =
+                avg - item;
+
             dist += diff * diff;
         }
 
-        if (dist < best_dist) {
+        if (dist < best_dist)
+        {
             best_dist = dist;
             best_label = k;
         }
     }
 
-    if (col_labels[j] != best_label) {
+    if (col_labels[j] != best_label)
+    {
         col_labels[j] = best_label;
         atomicAdd(d_changes, 1);
     }
 
     atomicAdd(d_total_dist, best_dist);
 }
+
+
+__global__
+void update_col_kernel_fp32(
+    int num_rows,
+    int local_cols,
+    int num_col_labels,
+    const float* __restrict__ matrix,
+    const int* __restrict__ row_labels,
+    int* __restrict__ col_labels,
+    const double* __restrict__ cluster_avg,
+    int* d_changes,
+    double* d_total_dist)
+{
+    int j =
+        blockIdx.x * blockDim.x +
+        threadIdx.x;
+
+    if (j >= local_cols)
+        return;
+
+    int best_label =
+        col_labels[j];
+
+    float best_dist =
+        INFINITY;
+
+    for (int k = 0; k < num_col_labels; k++)
+    {
+        float dist = 0.0f;
+        float comp = 0.0f;
+
+        for (int i = 0; i < num_rows; i++)
+        {
+            float item =
+                matrix[j*num_rows + i];
+
+            int r_lbl =
+                row_labels[i];
+
+            float avg =
+                (float)cluster_avg[
+                    r_lbl*num_col_labels + k];
+
+            float diff =
+                avg - item;
+
+            float y =
+                diff*diff - comp;
+
+            float t =
+                dist + y;
+
+            comp =
+                (t - dist) - y;
+
+            dist =
+                t;
+        }
+
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_label = k;
+        }
+    }
+
+    if (col_labels[j] != best_label)
+    {
+        col_labels[j] = best_label;
+        atomicAdd(d_changes,1);
+    }
+
+    atomicAdd(
+        d_total_dist,
+        (double)best_dist);
+}
+
 
 static inline double calculate_distance(double avg, double item) {
     double diff = avg - item;
@@ -234,6 +482,7 @@ int main(int argc, const char* argv[]) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+
 
     std::vector<float> matrix;
     std::vector<label_type> row_labels, col_labels;
@@ -411,21 +660,30 @@ BLOCK_SIZE,
             h_counts.size() * sizeof(int),
             cudaMemcpyDeviceToHost));
 
-        MPI_Allreduce(
-            MPI_IN_PLACE,
-            h_sums.data(),
-            (int)h_sums.size(),
-            MPI_DOUBLE,
-            MPI_SUM,
-            MPI_COMM_WORLD);
+      MPI_Request reqs[2];
 
-        MPI_Allreduce(
-            MPI_IN_PLACE,
-            h_counts.data(),
-            (int)h_counts.size(),
-            MPI_INT,
-            MPI_SUM,
-            MPI_COMM_WORLD);
+MPI_Iallreduce(
+    MPI_IN_PLACE,
+    h_sums.data(),
+    (int)h_sums.size(),
+    MPI_DOUBLE,
+    MPI_SUM,
+    MPI_COMM_WORLD,
+    &reqs[0]);
+
+MPI_Iallreduce(
+    MPI_IN_PLACE,
+    h_counts.data(),
+    (int)h_counts.size(),
+    MPI_INT,
+    MPI_SUM,
+    MPI_COMM_WORLD,
+    &reqs[1]);
+
+MPI_Waitall(
+    2,
+    reqs,
+    MPI_STATUSES_IGNORE);
 
         std::vector<double> h_cluster_avg(num_row_labels * num_col_labels);
         #pragma omp parallel for
@@ -462,6 +720,9 @@ BLOCK_SIZE,
         d_cluster_avg,
         d_row_dist);
 
+
+    
+
 cudaCheck(cudaGetLastError());
   
 
@@ -478,13 +739,20 @@ cudaCheck(cudaMemcpy(
     sizeof(double),
     cudaMemcpyDeviceToHost));
 
-MPI_Allreduce(
+MPI_Request row_req;
+
+MPI_Iallreduce(
     MPI_IN_PLACE,
     h_row_dist.data(),
     (int)h_row_dist.size(),
     MPI_DOUBLE,
     MPI_SUM,
-    MPI_COMM_WORLD);
+    MPI_COMM_WORLD,
+    &row_req);
+
+MPI_Wait(
+    &row_req,
+    MPI_STATUS_IGNORE);
 
 cudaCheck(cudaMemcpy(
     d_row_dist,
@@ -499,15 +767,25 @@ cudaCheck(cudaMemcpy(
     0,
     sizeof(int)));
 
-update_row_labels_kernel<<<
-    (num_rows + 255)/256,
-    256>>>(
+// update_row_labels_kernel<<<
+ //   (num_rows + 255)/256,
+  //  256>>>(
+   //     num_rows,
+     //   num_row_labels,
+      //  d_row_dist,
+       // d_row_labels,
+       // d_changes);  
+
+update_row_labels_kernel_warp<<<
+    (num_rows*32 + 127)/128,
+    128>>>(
         num_rows,
         num_row_labels,
         d_row_dist,
         d_row_labels,
         d_changes);
 
+        
 cudaCheck(cudaGetLastError());
 cudaCheck(cudaDeviceSynchronize());
 
@@ -545,7 +823,7 @@ cudaCheck(cudaMemcpy(
         cudaCheck(cudaMemcpy(d_changes, &zero_i, sizeof(int), cudaMemcpyHostToDevice));
         cudaCheck(cudaMemcpy(d_total_dist, &zero_d, sizeof(double), cudaMemcpyHostToDevice));
 
-        update_col_kernel<<<
+        update_col_kernel_fp32<<<
             (local_cols + BLOCK_SIZE - 1) / BLOCK_SIZE,
 BLOCK_SIZE>>>(
                 num_rows,

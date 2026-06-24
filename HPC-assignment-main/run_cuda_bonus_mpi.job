@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=cgc_cuda_bonus_mpi
+#SBATCH --output=job_%j.out
+#SBATCH --error=job_%j.err
+
+#SBATCH --partition=defq
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=4
+
+#SBATCH --time=01:00:00
+
+module purge
+module load gnu12/12.4.0
+module load openmpi4/4.1.6
+module load cuda12.1/toolkit/12.1
+
+export OMP_NUM_THREADS=4
+
+# Force all ranks to use GPU 0
+export CUDA_VISIBLE_DEVICES=0
+
+DATA=/var/scratch/bwn200/HPC_data/spring_data_m.npy
+LABELS=/var/scratch/bwn200/HPC_data/spring_labels_m_5x100.txt
+
+/usr/bin/time -p mpirun -np 4 ./cgc_cuda_bonus \
+    $DATA \
+    $LABELS \
+    -o cuda_bonus_m_4ranks.txt \
+    -m 100
